@@ -49,13 +49,21 @@ Rules: inspect pages in order; do not invent illegible text; assess each discern
    let openRouterFailure="OpenRouter backup is not configured; add OPENROUTER_API_KEY as a server-side secret.";
    if(!report&&env.OPENROUTER_API_KEY)try{
     const routerImages=[{type:"text",text:prompt},{type:"text",text:"QUESTION PAPER PAGES (in order):"},...questionImages.map(im=>({type:"image_url",image_url:{url:`data:${im.mimeType};base64,${im.data}`}})),{type:"text",text:"STUDENT ANSWER PAGES (in order):"},...answerImages.map(im=>({type:"image_url",image_url:{url:`data:${im.mimeType};base64,${im.data}`}}))];
-    const backup=await fetch("https://openrouter.ai/api/v1/chat/completions",{method:"POST",headers:{"authorization":`Bearer ${env.OPENROUTER_API_KEY}`,"content-type":"application/json","http-referer":"https://paperwise.app","x-title":"Paperwise Exam Evaluator"},body:JSON.stringify({model:"openrouter/free",messages:[{role:"user",content:routerImages}],response_format:{type:"json_object"},reasoning:{enabled:false},max_tokens:8000,temperature:0.1}),signal:AbortSignal.timeout(50_000)});
-    let backupData:any;try{backupData=await backup.json()}catch{backupData={error:{message:"OpenRouter returned an unreadable response."}}}
-    if(!backup.ok)throw new Error(backupData?.error?.message||`OpenRouter request failed (${backup.status}).`);
-    if(backupData?.error)throw new Error(backupData.error.message||"OpenRouter reported a provider error.");
-    const backupMessage=backupData?.choices?.[0]?.message;
-    const backupRaw=typeof backupMessage?.content==="string"?backupMessage.content:Array.isArray(backupMessage?.content)?backupMessage.content.map((part:any)=>part.text||"").join(""):"";
-    if(!backupRaw)throw new Error(`OpenRouter returned no answer text (finish reason: ${backupData?.choices?.[0]?.finish_reason||"unknown"}; response fields: ${Object.keys(backupData||{}).join(",")||"none"}).`);
+    let backupRaw="";
+    for(let attempt=0;attempt<2;attempt++){
+     let backup:Response;
+     try{backup=await fetch("https://openrouter.ai/api/v1/chat/completions",{method:"POST",headers:{"authorization":`Bearer ${env.OPENROUTER_API_KEY}`,"content-type":"application/json","http-referer":"https://paperwise.app","x-title":"Paperwise Exam Evaluator"},body:JSON.stringify({model:"openrouter/free",messages:[{role:"user",content:routerImages}],response_format:{type:"json_object"},reasoning:{enabled:false},max_tokens:8000,temperature:0.1,stream:false}),signal:AbortSignal.timeout(50_000)})}catch(e){const message=e instanceof Error?e.message:"OpenRouter request failed.";if(attempt===0&&/timeout|abort/i.test(message))continue;throw e}
+     let backupData:any;try{backupData=await backup.json()}catch(e){const message=e instanceof Error?e.message:"OpenRouter returned an unreadable response.";if(attempt===0&&/timeout|abort/i.test(message))continue;throw new Error("OpenRouter returned an unreadable response.")}
+     const providerMessage=String(backupData?.error?.message||"");
+     if(providerMessage&&attempt===0&&/prompt replacement|mm_items|timed out|timeout/i.test(providerMessage)){await new Promise(resolve=>setTimeout(resolve,300));continue}
+     if(!backup.ok)throw new Error(providerMessage||`OpenRouter request failed (${backup.status}).`);
+     if(backupData?.error)throw new Error(providerMessage||"OpenRouter reported a provider error.");
+     const backupMessage=backupData?.choices?.[0]?.message;
+     backupRaw=typeof backupMessage?.content==="string"?backupMessage.content:Array.isArray(backupMessage?.content)?backupMessage.content.map((part:any)=>part.text||"").join(""):"";
+     if(!backupRaw)throw new Error(`OpenRouter returned no answer text (finish reason: ${backupData?.choices?.[0]?.finish_reason||"unknown"}; response fields: ${Object.keys(backupData||{}).join(",")||"none"}).`);
+     break;
+    }
+    if(!backupRaw)throw new Error("OpenRouter did not return an answer after retrying the image route.");
     report=JSON.parse(backupRaw);
     if(!Array.isArray(report.questions)||typeof report.total_awarded!=="number"||typeof report.total_possible!=="number")throw new Error("OpenRouter returned an incomplete evaluation.");
     report.verification_summary=`OpenRouter free vision backup was used because Gemini failed: ${geminiFailure}. ${String(report.verification_summary||"")}`.trim();
