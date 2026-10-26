@@ -1,1 +1,5 @@
-node_modules\ndist\n.env\n.wrangler\n
+node_modules/
+dist/
+.env
+.dev.vars
+.wrangler/
