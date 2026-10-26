@@ -6,8 +6,10 @@ Mobile-first handwritten exam evaluation prototype.
 2. `npm install`
 3. `npm run dev`
 
-## Free deployment
-Push this project to GitHub. Create a Cloudflare Pages project from the repository. Build command: `npm run build`; output directory: `dist`. Add `GEMINI_API_KEY` as a server-side Pages Function secret. If Gemini 3.8 Flash is unavailable, the evaluator tries Gemini 3.5 Flash-Lite, then OpenRouter's free model router, which selects an available free model that supports image understanding. Add `OPENROUTER_API_KEY` as a server-side Pages Function secret to enable the OpenRouter backup. If those fail, it can use OpenAI GPT-6.1 Sol through the Responses API when `OPENAI_API_KEY` is configured. For local Pages development, put the keys you have in `.dev.vars`. `functions/api/evaluate.ts` serves `/api/evaluate`.
+## Cloudflare deployment
+Build the site and Worker, then deploy both together with `npm run build` and `npx wrangler deploy`. `wrangler.jsonc` configures the static assets and Worker entry point, so `/api/evaluate` accepts POST requests on the same `workers.dev` domain as the site. Add `GEMINI_API_KEY` as a Worker secret. Gemini 3.5 Flash-Lite is used if Gemini 3.8 Flash is unavailable; the evaluator then tries OpenRouter's free model router, which selects an available free model that supports image understanding. Add `OPENROUTER_API_KEY` as a Worker secret to enable that backup. If those fail, it can use OpenAI GPT-6.1 Sol through the Responses API when `OPENAI_API_KEY` is configured. For local development, put the keys you have in `.dev.vars`. `functions/api/evaluate.ts` contains the shared evaluation handler.
+
+The OpenRouter free endpoint has request limits and no service-level guarantee. Its provider may log submitted data and use it to improve its services, so do not submit identifiable student papers unless you have reviewed the current provider terms and have appropriate consent.
 
 The OpenRouter free endpoint has request limits and no service-level guarantee. Its provider may log submitted data and use it to improve its services, so do not submit identifiable student papers unless you have reviewed the current provider terms and have appropriate consent.
 
