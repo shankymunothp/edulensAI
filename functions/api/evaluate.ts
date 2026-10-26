@@ -1,4 +1,4 @@
-interface Env { GEMINI_API_KEY: string; OPENAI_API_KEY?: string }
+interface Env { GEMINI_API_KEY: string; OPENROUTER_API_KEY?: string; OPENAI_API_KEY?: string }
 interface Context { request: Request; env: Env }
 const reply=(data:unknown,status=200)=>new Response(JSON.stringify(data),{status,headers:{"content-type":"application/json; charset=utf-8","cache-control":"no-store"}});
 export const onRequestPost=async({request,env}:Context)=>{
@@ -34,8 +34,33 @@ Rules: inspect pages in order; do not invent illegible text; assess each discern
    if(!Array.isArray(report.questions)||typeof report.total_awarded!=="number"||typeof report.total_possible!=="number")throw new Error("Gemini returned an incomplete evaluation.");
   }catch(e){geminiFailure=e instanceof Error?e.message:"Gemini request failed."}
   if(geminiFailure){
-   if(!env.OPENAI_API_KEY)return reply({error:`Gemini is unavailable: ${geminiFailure} OpenAI backup is not configured; add OPENAI_API_KEY as a server-side secret.`},503);
+   let geminiLiteFailure="Gemini 3.5 Flash-Lite backup was not available.";
    try{
+    const liteEndpoint="https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key="+encodeURIComponent(env.GEMINI_API_KEY);
+    const lite=await fetch(liteEndpoint,{method:"POST",headers:{"content-type":"application/json"},body:geminiPayload,signal:AbortSignal.timeout(30_000)});
+    let liteData:any;try{liteData=await lite.json()}catch{liteData={error:{message:"Gemini Flash-Lite returned an unreadable response."}}}
+    if(!lite.ok)throw new Error(liteData?.error?.message||`Gemini Flash-Lite request failed (${lite.status}).`);
+    const liteRaw=liteData?.candidates?.[0]?.content?.parts?.map((p:any)=>p.text||"").join("");
+    if(!liteRaw)throw new Error("Gemini Flash-Lite returned an empty result.");
+    report=JSON.parse(liteRaw);
+    if(!Array.isArray(report.questions)||typeof report.total_awarded!=="number"||typeof report.total_possible!=="number")throw new Error("Gemini Flash-Lite returned an incomplete evaluation.");
+    report.verification_summary=`Gemini 3.5 Flash-Lite backup was used because Gemini 3.8 Flash failed: ${geminiFailure}. ${String(report.verification_summary||"")}`.trim();
+   }catch(e){geminiLiteFailure=e instanceof Error?e.message:"Gemini Flash-Lite backup failed."}
+   let openRouterFailure="OpenRouter backup is not configured; add OPENROUTER_API_KEY as a server-side secret.";
+   if(!report&&env.OPENROUTER_API_KEY)try{
+    const routerImages=[{type:"text",text:prompt},{type:"text",text:"QUESTION PAPER PAGES (in order):"},...questionImages.map(im=>({type:"image_url",image_url:{url:`data:${im.mimeType};base64,${im.data}`}})),{type:"text",text:"STUDENT ANSWER PAGES (in order):"},...answerImages.map(im=>({type:"image_url",image_url:{url:`data:${im.mimeType};base64,${im.data}`}}))];
+    const backup=await fetch("https://openrouter.ai/api/v1/chat/completions",{method:"POST",headers:{"authorization":`Bearer ${env.OPENROUTER_API_KEY}`,"content-type":"application/json","http-referer":"https://paperwise.app","x-title":"Paperwise Exam Evaluator"},body:JSON.stringify({model:"openrouter/free",messages:[{role:"user",content:routerImages}],response_format:{type:"json_object"},reasoning:{enabled:false},max_tokens:8000,temperature:0.1}),signal:AbortSignal.timeout(50_000)});
+    let backupData:any;try{backupData=await backup.json()}catch{backupData={error:{message:"OpenRouter returned an unreadable response."}}}
+    if(!backup.ok)throw new Error(backupData?.error?.message||`OpenRouter request failed (${backup.status}).`);
+    if(backupData?.error)throw new Error(backupData.error.message||"OpenRouter reported a provider error.");
+    const backupMessage=backupData?.choices?.[0]?.message;
+    const backupRaw=typeof backupMessage?.content==="string"?backupMessage.content:Array.isArray(backupMessage?.content)?backupMessage.content.map((part:any)=>part.text||"").join(""):"";
+    if(!backupRaw)throw new Error(`OpenRouter returned no answer text (finish reason: ${backupData?.choices?.[0]?.finish_reason||"unknown"}; response fields: ${Object.keys(backupData||{}).join(",")||"none"}).`);
+    report=JSON.parse(backupRaw);
+    if(!Array.isArray(report.questions)||typeof report.total_awarded!=="number"||typeof report.total_possible!=="number")throw new Error("OpenRouter returned an incomplete evaluation.");
+    report.verification_summary=`OpenRouter free vision backup was used because Gemini failed: ${geminiFailure}. ${String(report.verification_summary||"")}`.trim();
+   }catch(e){openRouterFailure=e instanceof Error?e.message:"OpenRouter backup failed."}
+   if(!report&&env.OPENAI_API_KEY)try{
     const openAIImages=[{type:"input_text",text:prompt},{type:"input_text",text:"QUESTION PAPER PAGES (in order):"},...questionImages.map(im=>({type:"input_image",image_url:`data:${im.mimeType};base64,${im.data}`,detail:"high"})),{type:"input_text",text:"STUDENT ANSWER PAGES (in order):"},...answerImages.map(im=>({type:"input_image",image_url:`data:${im.mimeType};base64,${im.data}`,detail:"high"}))];
     const backup=await fetch("https://api.openai.com/v1/responses",{method:"POST",headers:{"authorization":`Bearer ${env.OPENAI_API_KEY}`,"content-type":"application/json"},body:JSON.stringify({model:"gpt-6.1-sol",input:[{role:"user",content:openAIImages}],text:{format:{type:"json_object"}}}),signal:AbortSignal.timeout(75_000)});
     let backupData:any;try{backupData=await backup.json()}catch{backupData={error:{message:"OpenAI returned an unreadable response."}}}
@@ -44,8 +69,9 @@ Rules: inspect pages in order; do not invent illegible text; assess each discern
     if(!backupRaw)throw new Error("OpenAI returned an empty result.");
     report=JSON.parse(backupRaw);
     if(!Array.isArray(report.questions)||typeof report.total_awarded!=="number"||typeof report.total_possible!=="number")throw new Error("OpenAI returned an incomplete evaluation.");
-    report.verification_summary=`OpenAI backup (GPT-6.1 Sol) was used because Gemini failed: ${geminiFailure}. ${String(report.verification_summary||"")}`.trim();
-   }catch(e){const backupFailure=e instanceof Error?e.message:"OpenAI backup failed.";return reply({error:`Gemini failed: ${geminiFailure} OpenAI backup failed: ${backupFailure}`},502)}
+    report.verification_summary=`OpenAI backup (GPT-6.1 Sol) was used after Gemini 3.8 failed: ${geminiFailure}, Gemini Flash-Lite failed: ${geminiLiteFailure}, and OpenRouter failed: ${openRouterFailure}. ${String(report.verification_summary||"")}`.trim();
+   }catch(e){const backupFailure=e instanceof Error?e.message:"OpenAI backup failed.";return reply({error:`Gemini failed: ${geminiFailure} Gemini Flash-Lite failed: ${geminiLiteFailure} OpenRouter failed: ${openRouterFailure} OpenAI backup failed: ${backupFailure}`},502)}
+   if(!report)return reply({error:`Gemini failed: ${geminiFailure} Gemini Flash-Lite failed: ${geminiLiteFailure} OpenRouter failed: ${openRouterFailure} OpenAI backup is not configured.`},503);
   }
   report.student_name ||= body.studentName||"Student";report.subject ||= "Subject not detected";report.exam_name ||= body.examName||"Exam";
   report.skill_assessment=Array.isArray(report.skill_assessment)?report.skill_assessment.map((s:any)=>({area:String(s.area||"Learning skill"),level:String(s.level||"Not assessed"),evidence:String(s.evidence||"No clear evidence in this paper."),confidence:["high","medium","low"].includes(s.confidence)?s.confidence:"low"})):[];
